@@ -1,0 +1,18 @@
+.navbar {
+  width: 100vw;
+  height: 7vh;
+  background-color: #3C5FBC;
+  border-bottom: 1px solid #eaeaea;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+.logoDiv {
+  margin-left: 15%;
+}
+
+.logoText {
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: bold;
+}

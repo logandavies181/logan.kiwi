@@ -1,0 +1,10 @@
+.container {
+  min-height: 100vh;
+  background-color: #3C5FBC;
+  padding: 0 0.5rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+}
+
