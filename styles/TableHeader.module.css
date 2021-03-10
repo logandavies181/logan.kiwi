@@ -1,0 +1,14 @@
+.headerContainer {
+  border: 2px solid black;
+  display: flex;
+  flex: 1 1;
+  float: left;
+  font-weight: bold;
+  justify-content: center;
+  left: 0;
+  max-width: 25vw;
+  min-width: 10vw;
+  overflow: hidden;
+  position: sticky;
+  width: 25vw;
+}

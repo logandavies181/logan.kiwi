@@ -1,0 +1,12 @@
+.headerConentContainer {
+  border: 1px solid black;
+  display: block;
+  flex: 1 1;
+  float: left;
+  font-weight: bold;
+  justify-content: center;
+  left: 0;
+  max-width: 25vw;
+  min-width: 10vw;
+  width: 25vw;
+}

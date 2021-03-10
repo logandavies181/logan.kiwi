@@ -7,6 +7,24 @@ body {
   color: beige;
 }
 
+/* width */
+::-webkit-scrollbar {
+  width: 0px;
+  height: 2px;
+}
+
+/* Track */
+::-webkit-scrollbar-track {
+  box-shadow: inset 0 0 5px grey;
+  border-radius: 10px;
+}
+
+/* Handle */
+::-webkit-scrollbar-thumb {
+  background: orange;
+  border-radius: 10px;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -15,9 +33,3 @@ a {
 * {
   box-sizing: border-box;
 }
-
-table, th, td {
-  border: 1px solid black;
-}
-tr { display: block; float: left; }
-th, td { display: block; }

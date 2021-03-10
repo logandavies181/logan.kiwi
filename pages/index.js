@@ -25,6 +25,11 @@ export default function Home() {
               woops!
             </a>
           </Link>
+          <Link href="/test" >
+            <a className={styles.card}>
+              test
+            </a>
+          </Link>
           <Link href="/timetable" >
             <a className={styles.card}>
               Timetable

@@ -1,0 +1,6 @@
+.tableContentContainer {
+  border: 1px solid black;
+  display: flex;
+  flex: 1 1;
+  overflow: scroll;
+}
