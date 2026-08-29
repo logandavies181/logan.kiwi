@@ -1,0 +1,7 @@
+[
+  {
+    "name": "rummytimer",
+    "src": "../rummytimer",
+    "tailwind": true
+  }
+]
