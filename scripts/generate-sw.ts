@@ -14,41 +14,63 @@
 
 const APPS_DIRS = ["apps", "dist/apps"];
 
-function swTemplate(appName: string): string {
+function swTemplate(appName: string, precacheUrls: string[] = []): string {
   const scope = `/apps/${appName}/`;
+  const precache = precacheUrls.length > 0 ? JSON.stringify(precacheUrls, null, 2) : JSON.stringify([`${scope}`, `${scope}index.html`], null, 2);
   return `// Service Worker for ${appName} — scope ${scope}
-// Minimal installable SW: adheres to manifest scope
+// Network-first for built files, precached for offline
 const CACHE_NAME = 'pwa-${appName}-v1';
 const SCOPE = '${scope}';
+const PRECACHE_URLS = ${precache};
 
 self.addEventListener('install', (event) => {
-  // Skip waiting to activate immediately
-  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(PRECACHE_URLS).catch(() => {}))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
 });
 
 self.addEventListener('fetch', (event) => {
-  // Only handle requests within scope
   const url = new URL(event.request.url);
-  if (!url.pathname.startsWith(SCOPE)) return;
+  // Handle scope with and without trailing slash
+  const inScope = url.pathname === SCOPE.slice(0, -1) || url.pathname.startsWith(SCOPE);
+  if (!inScope) return;
+
+  // Normalize request for scope root without slash
+  let request = event.request;
+  if (url.pathname === SCOPE.slice(0, -1)) {
+    request = new Request(SCOPE, event.request);
+  }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request)
-        .then((response) => {
-          // Optionally cache successful GETs
-          if (event.request.method === 'GET' && response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-    })
+    fetch(request)
+      .then((response) => {
+        if (event.request.method === 'GET' && response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, clone);
+            if (url.pathname === SCOPE.slice(0, -1)) {
+              caches.open(CACHE_NAME).then((c) => c.put(SCOPE, clone.clone()));
+            }
+          });
+        }
+        return response;
+      })
+      .catch(() => caches.match(request).then((cached) => {
+        if (cached) return cached;
+        if (event.request.mode === 'navigate' || event.request.headers.get('accept')?.includes('text/html')) {
+          return caches.match(SCOPE + 'index.html') || caches.match(SCOPE) || caches.match(SCOPE.slice(0, -1));
+        }
+        return caches.match(event.request);
+      }))
   );
 });
 `;
@@ -106,17 +128,44 @@ async function patchIndexHtml(indexPath: string, appName: string): Promise<void>
   console.log(`  injected SW registration into ${indexPath}`);
 }
 
+async function collectPrecacheUrls(appDir: string, scope: string): Promise<string[]> {
+  const urls = new Set<string>([scope, `${scope}index.html`]);
+  try {
+    for await (const entry of Deno.readDir(appDir)) {
+      if (entry.isFile) {
+        // Only cache built assets, not sw.js itself to avoid cache loop during install
+        if (entry.name === "sw.js") continue;
+        urls.add(`${scope}${entry.name}`);
+      }
+    }
+  } catch { /* ignore */ }
+  // Ensure core files are present even if not listed (defensive)
+  for (const core of ["manifest.json", "output.css", "main.js", "favicon.svg", "hex.svg", "index.html"]) {
+    if (await exists(`${appDir}/${core}`)) urls.add(`${scope}${core}`);
+  }
+  // Also include any hashed JS like index-*.js
+  try {
+    for await (const entry of Deno.readDir(appDir)) {
+      if (entry.isFile && entry.name.startsWith("index-") && entry.name.endsWith(".js")) {
+        urls.add(`${scope}${entry.name}`);
+      }
+    }
+  } catch { /* ignore */ }
+  return [...urls].sort();
+}
+
 async function generateForApp(appName: string): Promise<void> {
   const scope = `/apps/${appName}/`;
-  const swContent = swTemplate(appName);
 
   for (const base of APPS_DIRS) {
     const appDir = `${base}/${appName}`;
     if (!await exists(appDir)) continue;
 
+    const precache = await collectPrecacheUrls(appDir, scope);
+    const swContent = swTemplate(appName, precache);
     const swPath = `${appDir}/sw.js`;
     await Deno.writeTextFile(swPath, swContent);
-    console.log(`✓ ${swPath} (scope ${scope})`);
+    console.log(`✓ ${swPath} (scope ${scope}, precache ${precache.length} urls)`);
 
     // Patch index.html
     await patchIndexHtml(`${appDir}/index.html`, appName);

@@ -465,42 +465,98 @@ export async function buildTarget(raw: BuildTarget): Promise<void> {
   console.log(`✓ Built ${t.name} -> ${t.destApps} / ${t.destDist}`);
 }
 
-function swTemplate(appName: string): string {
+function swTemplate(appName: string, precacheUrls: string[] = []): string {
   const scope = `/apps/${appName}/`;
+  const precache = precacheUrls.length > 0 ? JSON.stringify(precacheUrls, null, 2) : JSON.stringify([`${scope}`, `${scope}index.html`], null, 2);
   return `// Service Worker for ${appName} — scope ${scope}
-// Minimal installable SW
+// Network-first for built files, precached for offline
 const CACHE_NAME = 'pwa-${appName}-v1';
 const SCOPE = '${scope}';
+const PRECACHE_URLS = ${precache};
+
 self.addEventListener('install', (event) => {
-  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(PRECACHE_URLS).catch(() => {}))
+      .then(() => self.skipWaiting())
+  );
 });
+
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
 });
+
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (!url.pathname.startsWith(SCOPE)) return;
+  // Handle scope with and without trailing slash
+  const inScope = url.pathname === SCOPE.slice(0, -1) || url.pathname.startsWith(SCOPE);
+  if (!inScope) return;
+
+  // Normalize request for scope root without slash
+  let request = event.request;
+  if (url.pathname === SCOPE.slice(0, -1)) {
+    request = new Request(SCOPE, event.request);
+  }
+
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
+    fetch(request)
+      .then((response) => {
         if (event.request.method === 'GET' && response.ok) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, clone);
+            if (url.pathname === SCOPE.slice(0, -1)) {
+              caches.open(CACHE_NAME).then((c) => c.put(SCOPE, clone.clone()));
+            }
+          });
         }
         return response;
-      }).catch(() => cached);
-    })
+      })
+      .catch(() => caches.match(request).then((cached) => {
+        if (cached) return cached;
+        if (event.request.mode === 'navigate' || event.request.headers.get('accept')?.includes('text/html')) {
+          return caches.match(SCOPE + 'index.html') || caches.match(SCOPE) || caches.match(SCOPE.slice(0, -1));
+        }
+        return caches.match(event.request);
+      }))
   );
 });
 `;
 }
 
+async function collectPrecacheUrls(dest: string, scope: string): Promise<string[]> {
+  const urls = new Set<string>([scope, `${scope}index.html`]);
+  try {
+    for await (const entry of Deno.readDir(dest)) {
+      if (entry.isFile) {
+        if (entry.name === "sw.js") continue;
+        urls.add(`${scope}${entry.name}`);
+      }
+    }
+  } catch { /* ignore */ }
+  for (const core of ["manifest.json", "output.css", "main.js", "favicon.svg", "hex.svg", "index.html"]) {
+    if (await exists(`${dest}/${core}`)) urls.add(`${scope}${core}`);
+  }
+  try {
+    for await (const entry of Deno.readDir(dest)) {
+      if (entry.isFile && entry.name.startsWith("index-") && entry.name.endsWith(".js")) {
+        urls.add(`${scope}${entry.name}`);
+      }
+    }
+  } catch { /* ignore */ }
+  return [...urls].sort();
+}
+
 async function generateServiceWorker(dest: string, appName: string): Promise<void> {
+  const scope = `/apps/${appName}/`;
+  const precache = await collectPrecacheUrls(dest, scope);
+  const content = swTemplate(appName, precache);
   const swPath = `${dest}/sw.js`;
-  const content = swTemplate(appName);
   await Deno.writeTextFile(swPath, content);
-  console.log(`  generated ${swPath} (scope /apps/${appName}/)`);
+  console.log(`  generated ${swPath} (scope ${scope}, precache ${precache.length} urls)`);
 }
 
 async function patchIndexHtmlForSW(indexPath: string, appName: string): Promise<void> {

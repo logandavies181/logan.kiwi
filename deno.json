@@ -4,6 +4,8 @@
     "build:apps": "deno run --allow-read --allow-write --allow-run scripts/build.ts",
     "build:apps:config": "deno run --allow-read --allow-write --allow-run scripts/build.ts --config build.config.json",
     "serve": "deno task build && deno run --allow-net --allow-read server.ts",
+    "serve:only": "deno run --allow-net --allow-read server.ts",
+    "serve-only": "deno run --allow-net --allow-read server.ts",
     "scope-manifest": "deno run --allow-read --allow-write scripts/scope-manifest.ts",
     "scope-manifest:all": "deno run --allow-read --allow-write scripts/scope-manifest.ts",
     "generate-sw": "deno run --allow-read --allow-write scripts/generate-sw.ts",
