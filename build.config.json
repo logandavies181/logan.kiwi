@@ -1,3 +1,4 @@
 [
-  { "name": "rummytimer", "src": "../rummytimer", "tailwind": true }
+  { "name": "rummytimer", "src": "../rummytimer", "tailwind": true },
+  { "name": "harmonies-planner", "src": "../harmonies-planner", "tailwind": true }
 ]

@@ -192,7 +192,68 @@ async function scopeManifest(manifestPath: string, appName: string): Promise<voi
   }
 }
 
+async function tryBunBuild(src: string, destApps: string, destDist: string): Promise<boolean> {
+  // Check if project uses bun (justfile contains bun build or src has bun-like main.ts with esm.sh)
+  const justfile = `${src}/justfile`;
+  let usesBun = false;
+  if (await exists(justfile)) {
+    try {
+      const jf = await Deno.readTextFile(justfile);
+      if (jf.includes("bun build")) usesBun = true;
+    } catch { /* ignore */ }
+  }
+  // Also check if src/dist/<name> exists as prebuilt (harmonies-planner pattern)
+  // For harmonies-planner, the built output is at dist/harmonies-planner
+  if (!usesBun) {
+    // Quick check: if main.ts imports from esm.sh, likely needs bun not deno
+    const mainTs = `${src}/main.ts`;
+    if (await exists(mainTs)) {
+      try {
+        const content = await Deno.readTextFile(mainTs);
+        if (content.includes("esm.sh")) usesBun = true;
+      } catch { /* ignore */ }
+    }
+  }
+  if (!usesBun) return false;
+
+  const cwd = await Deno.realPath(src).catch(() => src);
+  const destAppsAbs = destApps.startsWith("/") ? destApps : `${Deno.cwd()}/${destApps}`;
+  const destDistAbs = destDist.startsWith("/") ? destDist : `${Deno.cwd()}/${destDist}`;
+
+  console.log(`  trying bun build for ${src} -> ${destApps} (cwd=${cwd})`);
+  // Try bun build main.ts --outdir <dest>
+  let ok = await runCommand("bun", ["build", "main.ts", "--outdir", destAppsAbs], { cwd });
+  if (!ok) {
+    console.warn(`  ⚠ bun build main.ts failed for ${src}`);
+    return false;
+  }
+  // Also build sw.ts if exists
+  if (await exists(`${src}/sw.ts`)) {
+    const okSw = await runCommand("bun", ["build", "sw.ts", "--outdir", destAppsAbs], { cwd });
+    if (!okSw) console.warn(`  ⚠ bun build sw.ts failed for ${src}`);
+    else console.log(`  ✓ bun built sw.ts -> ${destApps}`);
+  }
+  console.log(`  ✓ bun built ${src} -> ${destApps}`);
+  if (destApps !== destDist) {
+    await copyDirRecursive(destApps, destDist);
+  }
+  return true;
+}
+
 async function bundleApp(src: string, destApps: string, destDist: string): Promise<void> {
+  // First try bun for projects that need it (e.g., harmonies-planner)
+  if (await tryBunBuild(src, destApps, destDist)) {
+    // Also handle nested dist case: harmonies-planner's justfile outputs to dist/harmonies-planner
+    // If src/dist/<name> exists and dest doesn't have files, copy from there
+    const srcDistNested = `${src}/dist/${src.split("/").pop()}`;
+    if (await exists(srcDistNested) && !(await exists(`${destApps}/index.html`))) {
+      console.log(`  copying prebuilt ${srcDistNested} -> ${destApps}`);
+      await copyDirRecursive(srcDistNested, destApps);
+      if (destApps !== destDist) await copyDirRecursive(destApps, destDist);
+    }
+    return;
+  }
+
   // Try to detect entry and run deno bundle. For HTML entry, use --outdir; for JS/TS, use --output.
   const candidates = [
     `${src}/index.html`,
@@ -208,6 +269,13 @@ async function bundleApp(src: string, destApps: string, destDist: string): Promi
   }
   if (!entry) {
     console.log(`  no bundle entry found in ${src}, will copy files`);
+    // Check for nested prebuilt dist
+    const nested = `${src}/dist/${src.split("/").pop()}`;
+    if (await exists(nested)) {
+      console.log(`  copying prebuilt ${nested} -> ${destApps}`);
+      await copyDirRecursive(nested, destApps);
+      if (destApps !== destDist) await copyDirRecursive(destApps, destDist);
+    }
     return;
   }
 
@@ -249,6 +317,16 @@ async function bundleApp(src: string, destApps: string, destDist: string): Promi
         await Deno.mkdir(destDist, { recursive: true });
         await copyFile(outFile, outFileDist);
       }
+    }
+  }
+  // Handle nested dist fallback for harmonies-planner style projects
+  const srcDistNested = `${src}/dist/${src.split("/").pop()}`;
+  if (await exists(srcDistNested)) {
+    // If dest is missing expected files, copy from prebuilt
+    if (!(await exists(`${destApps}/index.html`)) && await exists(`${srcDistNested}/index.html`)) {
+      console.log(`  copying prebuilt fallback ${srcDistNested} -> ${destApps}`);
+      await copyDirRecursive(srcDistNested, destApps);
+      if (destApps !== destDist) await copyDirRecursive(destApps, destDist);
     }
   }
 }
@@ -335,18 +413,23 @@ export async function buildTarget(raw: BuildTarget): Promise<void> {
         let html = await Deno.readTextFile(idx);
         const scope = `/apps/${t.name}/`;
         const orig = html;
-        // Make favicon, manifest, css absolute to app scope
+        // Make favicon, manifest, css absolute to app scope (handle both favicon.svg and hex.svg)
         html = html.replace(/href="\.\/favicon\.svg"/g, `href="${scope}favicon.svg"`);
         html = html.replace(/href="favicon\.svg"/g, `href="${scope}favicon.svg"`);
+        html = html.replace(/href="\.\/hex\.svg"/g, `href="${scope}hex.svg"`);
+        html = html.replace(/href="hex\.svg"/g, `href="${scope}hex.svg"`);
         html = html.replace(/href="\.\/output\.css"/g, `href="${scope}output.css"`);
         html = html.replace(/href="output\.css"/g, `href="${scope}output.css"`);
         html = html.replace(/href="\.\/manifest\.json"/g, `href="${scope}manifest.json"`);
         html = html.replace(/href="manifest\.json"/g, `href="${scope}manifest.json"`);
-        // JS bundle (bundled HTML uses ./index-*.js or index-*.js)
+        // JS bundle (bundled HTML uses ./index-*.js, index-*.js, or main.js)
         html = html.replace(/src="\.\/index-/g, `src="${scope}index-`);
         html = html.replace(/src="index-/g, `src="${scope}index-`);
+        html = html.replace(/src="\.\/main\.js"/g, `src="${scope}main.js"`);
+        html = html.replace(/src="main\.js"/g, `src="${scope}main.js"`);
         // Also handle favicon.ico if present
         html = html.replace(/href="favicon\.ico"/g, `href="${scope}favicon.svg"`);
+        html = html.replace(/href="\.\/favicon\.ico"/g, `href="${scope}favicon.svg"`);
         if (html !== orig) {
           await Deno.writeTextFile(idx, html);
           console.log(`  patched ${idx} favicon/manifest/css/js to absolute ${scope}`);
@@ -461,15 +544,16 @@ async function patchJsForSW(dest: string, appName: string): Promise<void> {
         const p = `${dest}/${entry.name}`;
         let text = await Deno.readTextFile(p);
         const orig = text;
-        // Fix old scope "/" in serviceWorker.register
-        // Handles: register("sw.js", { scope: "/" }) or register("sw.js",{scope:"/"})
-        text = text.replace(/register\(\s*["']sw\.js["']\s*,\s*\{\s*scope:\s*["']\/["']\s*\}/g, `register('${scope}sw.js', {scope: '${scope}'}`);
-        text = text.replace(/register\(\s*["']\/sw\.js["']\s*,\s*\{\s*scope:\s*["']\/["']\s*\}/g, `register('${scope}sw.js', {scope: '${scope}'}`);
-        // Also fix bare register("sw.js") without scope — add scope
-        // Don't over-patch if already correct
+        // Fix any serviceWorker.register with wrong scope (e.g., "/" or "/harmonies-planner/" or "/rummytimer/")
+        // Handles: register("sw.js", { scope: "/" }), register("sw.js", { scope: "/harmonies-planner/" }), etc.
+        // Replace any scope that is not the expected one
+        text = text.replace(/register\(\s*["']sw\.js["']\s*,\s*\{\s*scope:\s*["'][^"']*["']\s*\}/g, `register('${scope}sw.js', {scope: '${scope}'}`);
+        text = text.replace(/register\(\s*["']\/sw\.js["']\s*,\s*\{\s*scope:\s*["'][^"']*["']\s*\}/g, `register('${scope}sw.js', {scope: '${scope}'}`);
+        text = text.replace(/register\(\s*["']\.?\/sw\.js["']\s*\)/g, `register('${scope}sw.js', {scope: '${scope}'})`);
+        // Also handle register with just sw.js and scope without quotes? Be generic
         if (text !== orig) {
           await Deno.writeTextFile(p, text);
-          console.log(`  patched ${p} SW scope "/" -> "${scope}"`);
+          console.log(`  patched ${p} SW scope -> "${scope}"`);
         }
       }
     }
