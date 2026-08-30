@@ -141,8 +141,8 @@ async function runTailwind(src: string, dest: string): Promise<void> {
   // Ensure dest exists
   await Deno.mkdir(dest, { recursive: true });
 
-  // Try 1: tailwindcss binary (externally installed) — use absolute output
-  let ok = await runCommand("tailwindcss", ["-o", output]);
+  // Try 1: tailwindcss binary (externally installed) — use absolute output, run from src so config is found
+  let ok = await runCommand("tailwindcss", ["-o", output], { cwd: src });
   if (ok && await exists(output)) {
     console.log(`  ✓ tailwindcss (binary) -> ${outputRel}`);
     return;
@@ -327,7 +327,37 @@ export async function buildTarget(raw: BuildTarget): Promise<void> {
     }
   }
 
-  // 5. Run tailwind if requested
+  // 5. Patch index.html to use absolute paths for favicon/manifest/css/js (robust for SPA routes and favicon isolation)
+  for (const d of [t.destApps, t.destDist]) {
+    const idx = `${d}/index.html`;
+    if (await exists(idx)) {
+      try {
+        let html = await Deno.readTextFile(idx);
+        const scope = `/apps/${t.name}/`;
+        const orig = html;
+        // Make favicon, manifest, css absolute to app scope
+        html = html.replace(/href="\.\/favicon\.svg"/g, `href="${scope}favicon.svg"`);
+        html = html.replace(/href="favicon\.svg"/g, `href="${scope}favicon.svg"`);
+        html = html.replace(/href="\.\/output\.css"/g, `href="${scope}output.css"`);
+        html = html.replace(/href="output\.css"/g, `href="${scope}output.css"`);
+        html = html.replace(/href="\.\/manifest\.json"/g, `href="${scope}manifest.json"`);
+        html = html.replace(/href="manifest\.json"/g, `href="${scope}manifest.json"`);
+        // JS bundle (bundled HTML uses ./index-*.js or index-*.js)
+        html = html.replace(/src="\.\/index-/g, `src="${scope}index-`);
+        html = html.replace(/src="index-/g, `src="${scope}index-`);
+        // Also handle favicon.ico if present
+        html = html.replace(/href="favicon\.ico"/g, `href="${scope}favicon.svg"`);
+        if (html !== orig) {
+          await Deno.writeTextFile(idx, html);
+          console.log(`  patched ${idx} favicon/manifest/css/js to absolute ${scope}`);
+        }
+      } catch (e) {
+        console.warn(`  ⚠ failed to patch ${idx}: ${e}`);
+      }
+    }
+  }
+
+  // 6. Run tailwind if requested
   if (t.tailwind) {
     for (const d of [t.destApps, t.destDist]) {
       await runTailwind(t.srcPath, d);
@@ -336,13 +366,114 @@ export async function buildTarget(raw: BuildTarget): Promise<void> {
     console.log(`  tailwind skipped for ${t.name}`);
   }
 
-  // 6. Scope manifest.json to subdirectory
+  // 7. Scope manifest.json to subdirectory
   for (const d of [t.destApps, t.destDist]) {
     await scopeManifest(`${d}/manifest.json`, t.name);
     await scopeManifest(`${d}/manifest.webmanifest`, t.name);
   }
 
+  // 8. Generate service worker per app (adheres to manifest scope)
+  for (const d of [t.destApps, t.destDist]) {
+    await generateServiceWorker(d, t.name);
+    await patchIndexHtmlForSW(`${d}/index.html`, t.name);
+    await patchJsForSW(d, t.name);
+  }
+
   console.log(`✓ Built ${t.name} -> ${t.destApps} / ${t.destDist}`);
+}
+
+function swTemplate(appName: string): string {
+  const scope = `/apps/${appName}/`;
+  return `// Service Worker for ${appName} — scope ${scope}
+// Minimal installable SW
+const CACHE_NAME = 'pwa-${appName}-v1';
+const SCOPE = '${scope}';
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+  if (!url.pathname.startsWith(SCOPE)) return;
+  event.respondWith(
+    caches.match(event.request).then((cached) => {
+      if (cached) return cached;
+      return fetch(event.request).then((response) => {
+        if (event.request.method === 'GET' && response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      }).catch(() => cached);
+    })
+  );
+});
+`;
+}
+
+async function generateServiceWorker(dest: string, appName: string): Promise<void> {
+  const swPath = `${dest}/sw.js`;
+  const content = swTemplate(appName);
+  await Deno.writeTextFile(swPath, content);
+  console.log(`  generated ${swPath} (scope /apps/${appName}/)`);
+}
+
+async function patchIndexHtmlForSW(indexPath: string, appName: string): Promise<void> {
+  if (!await exists(indexPath)) return;
+  let html = await Deno.readTextFile(indexPath);
+  const scope = `/apps/${appName}/`;
+  const swUrl = `${scope}sw.js`;
+  // If already has correct registration, skip (and fix old "/" scope)
+  if (html.includes(`scope: '${scope}'`) || html.includes(`scope:"${scope}"`) || html.includes(swUrl)) {
+    // Fix old "/" scope if present (e.g., rummytimer's main.ts had scope "/")
+    if (html.includes(`scope: "/"`) || html.includes(`scope: '/'`)) {
+      html = html.replace(/scope:\s*["']\/["']/g, `scope: '${scope}'`);
+      await Deno.writeTextFile(indexPath, html);
+      console.log(`  patched ${indexPath} scope "/" -> "${scope}"`);
+    }
+    return;
+  }
+  // Check if any serviceWorker registration already exists in HTML (not just JS bundle)
+  // We inject a small registration snippet before </body>
+  const snippet = `<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('${swUrl}',{scope:'${scope}'}).catch(e=>console.warn('SW failed',e));}</script>`;
+  if (html.includes("serviceWorker") && !html.includes(swUrl)) {
+    // Already has some SW registration (maybe in JS), don't duplicate in HTML but ensure sw.js exists
+    return;
+  }
+  if (html.includes("</body>")) {
+    html = html.replace("</body>", `${snippet}\n</body>`);
+  } else if (html.includes("</head>")) {
+    html = html.replace("</head>", `${snippet}\n</head>`);
+  } else {
+    html += `\n${snippet}\n`;
+  }
+  await Deno.writeTextFile(indexPath, html);
+  console.log(`  injected SW registration into ${indexPath} -> ${swUrl}`);
+}
+
+async function patchJsForSW(dest: string, appName: string): Promise<void> {
+  const scope = `/apps/${appName}/`;
+  try {
+    for await (const entry of Deno.readDir(dest)) {
+      if (entry.isFile && entry.name.endsWith(".js")) {
+        const p = `${dest}/${entry.name}`;
+        let text = await Deno.readTextFile(p);
+        const orig = text;
+        // Fix old scope "/" in serviceWorker.register
+        // Handles: register("sw.js", { scope: "/" }) or register("sw.js",{scope:"/"})
+        text = text.replace(/register\(\s*["']sw\.js["']\s*,\s*\{\s*scope:\s*["']\/["']\s*\}/g, `register('${scope}sw.js', {scope: '${scope}'}`);
+        text = text.replace(/register\(\s*["']\/sw\.js["']\s*,\s*\{\s*scope:\s*["']\/["']\s*\}/g, `register('${scope}sw.js', {scope: '${scope}'}`);
+        // Also fix bare register("sw.js") without scope — add scope
+        // Don't over-patch if already correct
+        if (text !== orig) {
+          await Deno.writeTextFile(p, text);
+          console.log(`  patched ${p} SW scope "/" -> "${scope}"`);
+        }
+      }
+    }
+  } catch { /* ignore */ }
 }
 
 export async function buildTargets(targets: BuildTarget[]): Promise<void> {
@@ -355,10 +486,11 @@ export async function buildTargets(targets: BuildTarget[]): Promise<void> {
   for (const t of targets) {
     await buildTarget(t);
   }
-  // After building all apps, regenerate shell manifest and re-scope all
+  // After building all apps, regenerate shell manifest, re-scope manifests and generate SWs
   console.log("\nRegenerating apps.json manifest...");
   await runCommand("deno", ["run", "--allow-read", "--allow-write", "scripts/generate-manifest.ts"]);
   await runCommand("deno", ["run", "--allow-read", "--allow-write", "scripts/scope-manifest.ts"]);
+  await runCommand("deno", ["run", "--allow-read", "--allow-write", "scripts/generate-sw.ts"]);
 }
 
 // CLI handling

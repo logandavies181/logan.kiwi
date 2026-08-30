@@ -1,10 +1,12 @@
 {
   "tasks": {
-    "build": "mkdir -p dist && deno run --allow-read --allow-write --allow-run scripts/build.ts --config build.config.json 2>/dev/null || deno run --allow-read --allow-write --allow-run scripts/build.ts 2>/dev/null || true && deno bundle --platform browser src/main.js --output dist/bundle.js && cp public/index.html dist/index.html && cp src/style.css dist/style.css 2>/dev/null || true && rm -rf dist/apps && mkdir -p dist/apps && cp -r apps/* dist/apps/ 2>/dev/null || true && deno run --allow-read --allow-write scripts/generate-manifest.ts && deno run --allow-read --allow-write scripts/scope-manifest.ts",
+    "build": "mkdir -p dist && deno run --allow-read --allow-write --allow-run scripts/build.ts --config build.config.json 2>/dev/null || deno run --allow-read --allow-write --allow-run scripts/build.ts 2>/dev/null || true && deno bundle --platform browser src/main.js --output dist/bundle.js && cp -r public/* dist/ 2>/dev/null || true && cp src/style.css dist/style.css 2>/dev/null || true && rm -rf dist/apps && mkdir -p dist/apps && cp -r apps/* dist/apps/ 2>/dev/null || true && deno run --allow-read --allow-write scripts/generate-manifest.ts && deno run --allow-read --allow-write scripts/scope-manifest.ts && deno run --allow-read --allow-write scripts/generate-sw.ts",
     "build:apps": "deno run --allow-read --allow-write --allow-run scripts/build.ts",
     "build:apps:config": "deno run --allow-read --allow-write --allow-run scripts/build.ts --config build.config.json",
     "serve": "deno task build && deno run --allow-net --allow-read server.ts",
     "scope-manifest": "deno run --allow-read --allow-write scripts/scope-manifest.ts",
-    "scope-manifest:all": "deno run --allow-read --allow-write scripts/scope-manifest.ts"
+    "scope-manifest:all": "deno run --allow-read --allow-write scripts/scope-manifest.ts",
+    "generate-sw": "deno run --allow-read --allow-write scripts/generate-sw.ts",
+    "generate-sw:all": "deno run --allow-read --allow-write scripts/generate-sw.ts"
   }
 }

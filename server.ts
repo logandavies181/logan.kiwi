@@ -37,6 +37,11 @@ Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req) => {
   try {
     const stat = await Deno.stat(filePath);
     if (stat.isDirectory) {
+      // Redirect directory without trailing slash to with slash for correct relative asset resolution (favicons, etc.)
+      if (!pathname.endsWith("/")) {
+        const url = new URL(req.url);
+        return Response.redirect(`${url.origin}${pathname}/`, 301);
+      }
       // Try serving index.html inside directory
       const indexPath = `${filePath}/index.html`;
       const data = await Deno.readFile(indexPath);
@@ -46,10 +51,36 @@ Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req) => {
     }
 
     const data = await Deno.readFile(filePath);
+    const headers: Record<string, string> = {
+      "content-type": contentType(filePath),
+    };
+    // For service workers, allow the scope to match manifest (e.g., /apps/<name>/)
+    if (filePath.endsWith("/sw.js") || filePath.endsWith("/serviceworker.js") || filePath.endsWith("/service-worker.js")) {
+      // Derive scope from file path: dist/apps/<name>/sw.js -> /apps/<name>/
+      const match = filePath.match(/\/apps\/([^/]+)\/sw\.js$/);
+      if (match) {
+        headers["Service-Worker-Allowed"] = `/apps/${match[1]}/`;
+      } else if (pathname === "/sw.js") {
+        headers["Service-Worker-Allowed"] = "/";
+      }
+      headers["Cache-Control"] = "no-cache";
+    }
     return new Response(data, {
-      headers: { "content-type": contentType(filePath) },
+      headers,
     });
   } catch {
+    // Favicon fallback: browsers request /favicon.ico even when we serve SVG
+    if (pathname === "/favicon.ico" || pathname === "/favicon.svg") {
+      for (const cand of [`${DIST_DIR}/favicon.svg`, `${DIST_DIR}/favicon.ico`]) {
+        try {
+          const data = await Deno.readFile(cand);
+          return new Response(data, {
+            headers: { "content-type": contentType(cand) },
+          });
+        } catch { /* try next */ }
+      }
+    }
+
     const isAppsPath = pathname.startsWith("/apps/");
     const isAppsJson = pathname === "/apps.json";
 
