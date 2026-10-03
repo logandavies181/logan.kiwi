@@ -422,6 +422,9 @@ export async function buildTarget(raw: BuildTarget): Promise<void> {
         html = html.replace(/href="output\.css"/g, `href="${scope}output.css"`);
         html = html.replace(/href="\.\/manifest\.json"/g, `href="${scope}manifest.json"`);
         html = html.replace(/href="manifest\.json"/g, `href="${scope}manifest.json"`);
+        // Assets referenced from public/ are copied to the app root, so drop the ./public/ prefix
+        html = html.replace(/href="\.\/public\/([^"]+)"/g, `href="${scope}$1"`);
+        html = html.replace(/src="\.\/public\/([^"]+)"/g, `src="${scope}$1"`);
         // JS bundle (bundled HTML uses ./index-*.js, index-*.js, or main.js)
         html = html.replace(/src="\.\/index-/g, `src="${scope}index-`);
         html = html.replace(/src="index-/g, `src="${scope}index-`);
