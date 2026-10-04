@@ -95,7 +95,6 @@ button:hover { background: #084dd6; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.apps-loading,
 .apps-empty {
   color: #888;
   font-style: italic;
