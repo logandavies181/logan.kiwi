@@ -1,5 +1,5 @@
 [
-  { "name": "rummytimer", "src": "../rummytimer", "tailwind": true },
+  { "name": "rummytimer", "src": "../rummytimer", "tailwind": false, "entry": "app.ts" },
   { "name": "harmonies-planner", "src": "../harmonies-planner", "tailwind": true },
   { "name": "poople-solver", "src": "../pooplesolver", "tailwind": false },
   { "name": "unwordle-solver", "src": "../unwordlesolver", "tailwind": false }

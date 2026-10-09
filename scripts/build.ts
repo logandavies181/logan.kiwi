@@ -240,7 +240,7 @@ async function tryBunBuild(src: string, destApps: string, destDist: string): Pro
   return true;
 }
 
-async function bundleApp(src: string, destApps: string, destDist: string): Promise<void> {
+async function bundleApp(src: string, destApps: string, destDist: string, entryOverride = ""): Promise<void> {
   // First try bun for projects that need it (e.g., harmonies-planner)
   if (await tryBunBuild(src, destApps, destDist)) {
     // Also handle nested dist case: harmonies-planner's justfile outputs to dist/harmonies-planner
@@ -255,14 +255,16 @@ async function bundleApp(src: string, destApps: string, destDist: string): Promi
   }
 
   // Try to detect entry and run deno bundle. For HTML entry, use --outdir; for JS/TS, use --output.
-  const candidates = [
-    `${src}/index.html`,
-    `${src}/index.htm`,
-    `${src}/main.ts`,
-    `${src}/main.js`,
-    `${src}/src/main.ts`,
-    `${src}/src/main.js`,
-  ];
+  const candidates = entryOverride
+    ? [entryOverride.startsWith("/") ? entryOverride : `${src}/${entryOverride}`]
+    : [
+      `${src}/index.html`,
+      `${src}/index.htm`,
+      `${src}/main.ts`,
+      `${src}/main.js`,
+      `${src}/src/main.ts`,
+      `${src}/src/main.js`,
+    ];
   let entry: string | undefined;
   for (const c of candidates) {
     if (await exists(c)) { entry = c; break; }
@@ -306,13 +308,20 @@ async function bundleApp(src: string, destApps: string, destDist: string): Promi
     }
   } else {
     // JS/TS entry - use absolute out file
-    const outFile = `${destAppsAbs}/bundle.js`;
-    const outFileDist = `${destDistAbs}/bundle.js`;
+    const outFilename = entryOverride
+      ? `${entryBase.split("/").pop()!.replace(/\.(?:ts|js)$/i, ".js")}`
+      : "bundle.js";
+    const outFile = `${destAppsAbs}/${outFilename}`;
+    const outFileDist = `${destDistAbs}/${outFilename}`;
     console.log(`  bundling JS entry ${entryBase} -> ${outFile} (cwd=${cwd})`);
     const entryRel = entryBase;
     let ok = await runCommand("deno", ["bundle", "--platform", "browser", entryRel, "--output", outFile], { cwd });
     if (!ok) console.warn(`  ⚠ deno bundle failed for ${entry}`);
     else {
+      if (await exists(`${src}/index.html`)) {
+        await copyFile(`${src}/index.html`, `${destApps}/index.html`);
+        if (destApps !== destDist) await copyFile(`${src}/index.html`, `${destDist}/index.html`);
+      }
       if (destApps !== destDist) {
         await Deno.mkdir(destDist, { recursive: true });
         await copyFile(outFile, outFileDist);
@@ -348,9 +357,10 @@ export async function buildTarget(raw: BuildTarget): Promise<void> {
 
   // 1. Bundle the app (handles index.html or JS entry via deno bundle)
   const hasIndexHtml = await exists(`${t.srcPath}/index.html`);
-  const hasMain = await exists(`${t.srcPath}/main.ts`) || await exists(`${t.srcPath}/main.js`);
+  const hasMain = await exists(`${t.srcPath}/main.ts`) || await exists(`${t.srcPath}/main.js`) ||
+    Boolean(t.entry && await exists(t.entry.startsWith("/") ? t.entry : `${t.srcPath}/${t.entry}`));
   if (hasIndexHtml || hasMain) {
-    await bundleApp(t.srcPath, t.destApps, t.destDist);
+    await bundleApp(t.srcPath, t.destApps, t.destDist, t.entry);
   } else {
     // No bundle entry — copy static assets (index.html etc.) manually, excluding dev files
     console.log(`  no bundle entry, copying static assets from ${t.srcPath}`);
@@ -430,6 +440,8 @@ export async function buildTarget(raw: BuildTarget): Promise<void> {
         html = html.replace(/src="index-/g, `src="${scope}index-`);
         html = html.replace(/src="\.\/main\.js"/g, `src="${scope}main.js"`);
         html = html.replace(/src="main\.js"/g, `src="${scope}main.js"`);
+        html = html.replace(/src="\.\/app\.js"/g, `src="${scope}app.js"`);
+        html = html.replace(/src="app\.js"/g, `src="${scope}app.js"`);
         // Also handle favicon.ico if present
         html = html.replace(/href="favicon\.ico"/g, `href="${scope}favicon.svg"`);
         html = html.replace(/href="\.\/favicon\.ico"/g, `href="${scope}favicon.svg"`);
